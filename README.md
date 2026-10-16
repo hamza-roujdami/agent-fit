@@ -114,21 +114,23 @@ For lanes 3 and 4, the Microsoft example follows Microsoft's [comparison of Agen
 
 ## Technical design
 
-agent-fit is built on **Microsoft Agent Framework (MAF)**, **Microsoft Foundry** and **Azure**, and it runs entirely in your Azure subscription. Models come from a Foundry deployment, the service is a Foundry hosted agent, and all state lives in Azure services. Nothing depends on a model or a server running on someone's machine.
+agent-fit is built on **Microsoft Agent Framework (MAF)**, **Microsoft Foundry** and **Azure**, and it runs entirely in your Azure subscription. Models come from a Foundry deployment, the service is a container on **Azure Container Apps**, and all state lives in Azure services. Nothing depends on a model or a server running on someone's machine.
 
 ### Architecture
 
 ```mermaid
 flowchart TD
-    P(["Person with an idea"]) --> C["Chat client<br/>any client that can call a Responses endpoint"]
-    C -->|Entra token| EP["Hosted agent endpoint<br/>Responses protocol"]
-    EP --> TURN
-    subgraph FA["Foundry Agent Service: hosted agent, one container"]
+    P(["Person with an idea"]) --> C["Chat client<br/>terminal or web"]
+    C -->|Entra sign-in| ING["Container Apps ingress<br/>built-in Entra authentication"]
+    ING --> API
+    subgraph ACA["Azure Container Apps: one stateless container, managed identity"]
         direction TB
+        API["FastAPI service<br/>one endpoint, one conversation per idea"]
         TURN["Interview turn<br/>MAF workflow: model steps and code steps"]
         ADV["Solution Advisor<br/>MAF workflow: draft, lint, document"]
         SK["Skills<br/>explanations, lane guides, glossary"]
         DEC["Decision functions<br/>evidence check, rules, design lint, Word builder"]
+        API --> TURN
         TURN --> DEC
         ADV --> DEC
         TURN -->|lane 5| ADV
@@ -137,10 +139,10 @@ flowchart TD
     end
     TURN --> M["Foundry model deployment<br/>guardrails on input and output"]
     ADV --> M
-    FA -->|managed identity| COS[("Azure Cosmos DB<br/>idea cards")]
-    FA -->|managed identity| BLOB[("Blob Storage<br/>generated documents")]
-    FA -.-> AI["Application Insights<br/>traces from MAF and the platform"]
-    EV["Evaluation run in CI<br/>persona conversations"] -.->|calls| EP
+    ACA -->|managed identity| COS[("Azure Cosmos DB<br/>idea cards and conversations")]
+    ACA -->|managed identity| BLOB[("Blob Storage<br/>generated documents")]
+    ACA -.-> AI["Application Insights<br/>OpenTelemetry traces from MAF"]
+    EV["Evaluation run in CI<br/>persona conversations"] -.->|calls the service| ING
     EV -.-> FE["Foundry evaluations<br/>and red teaming scan"]
 ```
 
@@ -175,45 +177,51 @@ The model never sets a status or picks a verdict. In a trial of this pattern wit
 | **Agent runtime** | [Microsoft Agent Framework](https://learn.microsoft.com/en-us/agent-framework/overview/) workflows | Code steps are function executors with conditional and switch-case edges. Model steps are agents. |
 | **Model** | A Foundry model deployment, called through `FoundryChatClient` with Entra sign-in and no keys | The deployment name is configuration. Start with Global Standard, and choose a Data Zone or regional type if processing location matters ([deployment types](https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-models/concepts/deployment-types)). |
 | **Model sizes** | A smaller model for interview turns, a stronger one for the advisor's design drafts | A hypothesis. The evaluations decide. |
-| **Hosting** | A Foundry [hosted agent](https://learn.microsoft.com/en-us/azure/ai-foundry/agents/concepts/hosted-agents) using the Responses protocol | The platform provides the endpoint, a dedicated Entra identity for the agent, scale to zero, per-session state and conversation history. |
-| **Idea card** | Azure Cosmos DB, one document per idea | Our own state, kept apart from chat history and written with the stable `azure-cosmos` SDK. |
+| **Hosting** | [Azure Container Apps](https://learn.microsoft.com/en-us/azure/container-apps/overview), one container image | The app can scale to zero, and billing then stops for consumption ([billing](https://learn.microsoft.com/en-us/azure/container-apps/billing)). Setting a minimum of one replica keeps an instance always running, which avoids a cold start ([scaling](https://learn.microsoft.com/en-us/azure/container-apps/scale-app)). |
+| **Service** | A FastAPI app that serves one endpoint and runs the MAF workflows | The stable `agent-framework-ag-ui` package provides a FastAPI endpoint for agents and workflows, and is a candidate for the protocol a web client would speak. |
+| **Sign-in** | Container Apps [built-in authentication](https://learn.microsoft.com/en-us/azure/container-apps/authentication) with Microsoft Entra ID | Authentication happens at the platform edge, before a request reaches the app. |
+| **Idea card and conversation** | Azure Cosmos DB, one document per idea holding the card and the transcript | Our own state, written with the stable `azure-cosmos` SDK. The service is stateless: each request loads the idea, runs one turn and saves it, so any replica can serve any turn. |
 | **Documents** | Word files built in code with `python-docx`, stored in Blob Storage | Returned to the person through time-limited access. |
 | **Explanations** | MAF [skills](https://learn.microsoft.com/en-us/agent-framework/agents/skills) (`SKILL.md`) | Versioned in the repo and loaded only when relevant. |
-| **Content safety** | [Foundry guardrails](https://learn.microsoft.com/en-us/azure/ai-foundry/guardrails/guardrails-overview) on the model deployment | Agent-level controls and network egress controls for hosted agents are preview. |
+| **Content safety** | [Foundry guardrails](https://learn.microsoft.com/en-us/azure/ai-foundry/guardrails/guardrails-overview) on the model deployment, covering input and output | Agent-level controls, such as tool-call and tool-response checks, apply only to agents built in Foundry Agent Service, so they are not available here. Limits on what the agent may do are enforced in code. |
 | **Prompt injection** | Code gates first: input is data and every extracted fact needs a verified quote | MAF's experimental `security` module is a candidate to add. |
-| **Tracing** | OpenTelemetry from MAF, sent to Application Insights | The platform adds its own telemetry. |
-| **Evaluations** | Persona conversations run in CI against the deployed agent, graded by code on the outcome | Foundry's [built-in evaluators](https://learn.microsoft.com/en-us/azure/ai-foundry/concepts/evaluation-approach-gen-ai) grade explanation quality, and a red teaming scan runs before each release. |
-| **Infrastructure** | `azd` with Bicep, using [Azure Verified Modules](https://azure.github.io/Azure-Verified-Modules/) where they exist | The [deploy guide](https://learn.microsoft.com/en-us/azure/ai-foundry/agents/how-to/deploy-hosted-agent) says `azd up` creates the Foundry project, model deployment, container registry, Application Insights and managed identity. We add Cosmos DB, Storage and the role assignments. |
-| **Identity** | Entra ID and managed identity throughout, with least-privilege roles | No keys or secrets in code. |
+| **Tracing** | OpenTelemetry from MAF, sent to Application Insights | Container Apps also sends console logs to Log Analytics ([log monitoring](https://learn.microsoft.com/en-us/azure/container-apps/log-monitoring)). |
+| **Evaluations** | Persona conversations run in CI against the deployed service, graded by code on the outcome | Foundry's [built-in evaluators](https://learn.microsoft.com/en-us/azure/ai-foundry/concepts/evaluation-approach-gen-ai) grade explanation quality, and a red teaming scan runs before each release. |
+| **Infrastructure** | The Azure Developer CLI (`azd`) with Bicep, using [Azure Verified Modules](https://azure.github.io/Azure-Verified-Modules/) where they exist | `azd` supports a `containerapp` host that deploys from an image or builds from source ([schema](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/azd-schema)). |
+| **Identity** | A managed identity on the container app, with least-privilege roles on each resource | The identity pulls the image from the registry without a password ([managed identity](https://learn.microsoft.com/en-us/azure/container-apps/managed-identity)) and calls the model, Cosmos DB and Blob Storage with role assignments. No keys or secrets in code. |
 
 ### Azure resources
 
 | Resource | Purpose |
 |---|---|
-| Foundry resource and project | Models, the hosted agent and evaluations ([architecture](https://learn.microsoft.com/en-us/azure/ai-foundry/concepts/architecture)) |
-| Model deployment | The model the agent calls |
-| Container Registry | The agent's container image, built remotely by `azd` (`linux/amd64`) |
-| Cosmos DB account | Idea cards, accessed with a data-plane role assigned to the agent identity |
-| Storage account | Generated documents, accessed with a data-plane role assigned to the agent identity |
+| Foundry resource and project | Model deployments and evaluations ([architecture](https://learn.microsoft.com/en-us/azure/ai-foundry/concepts/architecture)) |
+| Model deployment | The model the service calls. The app's identity needs the Foundry User role on the Foundry resource ([roles](https://learn.microsoft.com/en-us/azure/ai-foundry/concepts/rbac-foundry)). |
+| Container Apps environment and container app | Runs the service |
+| Container Registry | The service's container image |
+| Managed identity | Image pull and access to every other resource |
+| Cosmos DB account | Idea cards and conversations, with a data-plane role for the identity |
+| Storage account | Generated documents, with a data-plane role for the identity |
 | Application Insights and Log Analytics | Traces, metrics and logs |
 
 ### Design decisions
 
-1. **A hosted agent, not our own service on Container Apps.** The platform supplies the identity, scaling, session state and endpoint, and hosted-agent guardrail controls apply to it. The cost is a narrower region list and some preview controls. The same container could run on Azure Container Apps instead.
-2. **Cosmos DB for the card, not workflow checkpoints.** Each turn is one request and the person is the human in the loop, so no workflow needs to pause for days. MAF's Cosmos checkpoint storage is beta and uses pickle, so it is added only if that changes.
-3. **No search index, embeddings or Foundry Memory in release 1.** The card is the memory, and explanations are versioned files.
-4. **Decision logic is plain Python functions.** The MAF code steps call them. That keeps the rules readable and lets the decision tests run with no model and no Azure, which is the only part of the project that runs without Azure.
-5. **The interview starts as a workflow with code gates.** It becomes an agent that chooses its own next question only if the evaluations show it must.
-6. **Conversations are graded on the outcome, not the path.** The card, verdict, lane and readiness must be right, and the order of questions can vary.
+1. **Container Apps, not a Foundry hosted agent.** We own the endpoint and the conversation state, which keeps the service portable and not tied to the hosted-agent region list or its preview-only controls. The cost is that we build and secure the endpoint ourselves, and we do not get agent-level guardrails.
+2. **A stateless service.** All state lives in Cosmos DB, so replicas can be added, removed or restarted at any time, and the app can scale to zero between conversations.
+3. **Cosmos DB for the card and transcript, not workflow checkpoints.** Each turn is one request and the person is the human in the loop, so no workflow needs to pause for days. MAF's Cosmos checkpoint storage and history provider are beta, and checkpoints use pickle, so they are added only if that changes.
+4. **No search index, embeddings or Foundry Memory in release 1.** The card is the memory, and explanations are versioned files.
+5. **Decision logic is plain Python functions.** The MAF code steps call them. That keeps the rules readable and lets the decision tests run with no model and no Azure, which is the only part of the project that runs without Azure.
+6. **The interview starts as a workflow with code gates.** It becomes an agent that chooses its own next question only if the evaluations show it must.
+7. **Conversations are graded on the outcome, not the path.** The card, verdict, lane and readiness must be right, and the order of questions can vary.
 
 ### Dependencies
 
 | Package | Role | Maturity at time of writing |
 |---|---|---|
 | `agent-framework-core`, `agent-framework-foundry` | Workflows, agents, skills, Foundry client | Stable |
-| `azure-ai-agentserver-responses` | Serves the agent over the Responses protocol | Stable |
-| `agent-framework-foundry-hosting` | Adapter from MAF to hosted agents | **Beta** |
+| `agent-framework-ag-ui` | FastAPI endpoint for agents and workflows (candidate) | Stable |
+| `fastapi`, `uvicorn` | The web service | Stable |
 | `azure-cosmos`, `azure-storage-blob`, `azure-identity` | State and sign-in | Stable |
+| `azure-monitor-opentelemetry` | Sends traces to Application Insights | Stable |
 | `azure-ai-evaluation` | Foundry evaluations | Stable |
 | `python-docx`, `pydantic` | Word documents and typed contracts | Stable |
 
@@ -221,10 +229,12 @@ Pin every version, and re-run the evaluations on each upgrade, because MAF is re
 
 ### To validate during the build
 
-- Whether a MAF workflow is best served through the beta hosting adapter or through the stable Responses library with a thin handler.
-- Which Foundry models and quotas are available in the chosen region, and which the Agent Service supports. Pick from the [hosted-agent regions](https://learn.microsoft.com/en-us/azure/ai-foundry/agents/concepts/hosted-agents).
-- Whether private networking is available for hosted agents in the chosen region.
-- That the hosted-agent session limits fit a conversation that spans days. The card lives in Cosmos DB, so the platform session can expire without losing it.
+- That the Foundry resource and project, the model deployment and the role assignments can all be created with Azure Verified Modules. The account module supports the `AIServices` kind with deployments and a project-management setting, but it is not confirmed that it creates the project itself.
+- The least-privilege role that lets the app's managed identity call a model deployment through the project endpoint. The documented role is Foundry User.
+- Which Foundry models, deployment types and quotas are available in the chosen region.
+- Whether the `agent-framework-ag-ui` endpoint suits a workflow-based turn, or a thin FastAPI route of our own is simpler.
+- Cold start time when the app has scaled to zero, and whether a minimum of one replica is worth its cost.
+- Whether private networking is needed for Container Apps, Cosmos DB, Storage and the model endpoint in a regulated setting.
 
 ## Roadmap
 
