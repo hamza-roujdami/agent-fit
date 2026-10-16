@@ -21,7 +21,7 @@ The first release is a single conversation that:
 
 1. **Understands the person and their work.** It asks plain-language questions, one at a time, and adapts its wording to who it is talking to.
 2. **Builds an idea card.** Each fact is recorded as stated, inferred or unknown, with the person's own words as evidence.
-3. **Recommends the simplest approach that fits:** not AI, AI-assisted, workflow, single agent, multi-agent, or needs more information.
+3. **Recommends the simplest approach that fits:** not AI, AI-assisted, workflow, single agent, multi-agent, or needs more information. It then points to the Microsoft option that fits that approach (see [Where an idea lands](#where-an-idea-lands)).
 4. **Explains the answer and the parts.** The brain (the model), the hands (its tools), memory and knowledge, the rules, and a person in charge, each tied to the person's own idea.
 5. **Lets them try what-ifs.** "What if a person approved every step?" The answer and the reasons update.
 6. **Checks readiness before hand-off:** ready, ready with conditions, or not yet, with the gaps named.
@@ -44,18 +44,38 @@ flowchart TD
         I --> J["Readiness check<br/>ready, ready with conditions, or not yet"]
         J --> K["Confirm the idea card"]
     end
-    K --> L{"Take it further?"}
+    K --> L{"Which lane?"}
     L -->|not AI, or not yet| M(["Clear next step"])
+    L -->|ready-made agent| S(["Adopt it"])
+    L -->|self-serve: Agent Builder or Copilot Studio| T(["Build it with light support"])
     subgraph LATER["Later releases"]
         N["AI architect reviews and designs"] --> O["Build plan"]
         O --> P["Team builds it"]
     end
-    L -->|ready| N
+    L -->|needs an architect| N
     classDef now fill:#e8f1fb,stroke:#0f6cbd,color:#0b2e4f
     classDef later fill:#fff4e0,stroke:#e0a800,color:#5c4200
-    class A,B,C,D,E,F,G,H,I,J,K,L,M now
+    class A,B,C,D,E,F,G,H,I,J,K,L,M,S,T now
     class N,O,P later
 ```
+
+## Where an idea lands
+
+agent-fit is **Microsoft first**: when an idea needs AI, it recommends the Microsoft option that fits, and it says so plainly when another option would serve better. The order follows Microsoft's own [technology plan for AI agents](https://learn.microsoft.com/en-us/azure/cloud-adoption-framework/ai-agents/technology-solutions-plan-strategy), which first asks whether a ready-made agent already meets the need and builds only if none does.
+
+| Lane | When it fits | Who builds |
+|---|---|---|
+| **1. Not AI** | Fixed rules, or a report | Whoever owns the process |
+| **2. Ready-made agent** | A Microsoft 365 Copilot or product agent already does it | Nobody, just adopt it |
+| **3. Agent Builder** | One person or a small team, answering questions from their own content | The submitter |
+| **4. Copilot Studio** | A department or customer-facing agent, multi-step work, approvals, simple integrations, low risk | A business maker, with support |
+| **5. Architect-led** | Microsoft Foundry or custom code, multi-agent, high risk, strict repeatability, heavy integration | A pro-code team |
+
+The choice between Agent Builder and Copilot Studio follows Microsoft's [comparison of the two](https://learn.microsoft.com/en-us/microsoft-365-copilot/extensibility/copilot-studio-experience): Agent Builder for individuals and small teams, Copilot Studio for wider audiences and more advanced capability and governance.
+
+**Risk sets a ceiling on self-serve.** A high-risk answer, such as irreversible actions or sensitive data, can never land in lanes 3 or 4, so self-serve never becomes unsupervised AI.
+
+*agent-fit is an independent project. It is not an official Microsoft tool, and product capabilities change, so each recommendation links to its source and should be checked before you build.*
 
 ## Design principles
 
@@ -64,6 +84,7 @@ flowchart TD
 - **Input is data, not instructions.** Whatever a person types is never treated as a command.
 - **The person stays in charge.** Nothing goes to an architect until the submitter confirms the card.
 - **Simple first.** The system leans toward the simpler option, and a simple answer counts as a good result.
+- **Honest about the platform.** Microsoft first, but never at the cost of the right answer.
 
 ## What it does not do
 
@@ -80,4 +101,4 @@ flowchart TD
 ## Roadmap
 
 1. **Release 1:** the conversation above, ending in a confirmed idea card.
-2. **Later:** an interactive visual experience, the architect review, and a build brief that a human team or a supervised agent team can work from.
+2. **Later:** a starter specification for lanes 3 and 4 (instructions, knowledge sources, tools and guardrails a maker can start from), an interactive visual experience, the architect review for lane 5, and a build brief that a human team or a supervised agent team can work from.
